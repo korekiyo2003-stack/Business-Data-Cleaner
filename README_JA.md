@@ -47,7 +47,6 @@ sales_dirty.csv（utf-8）: 10 行 → 有効 7 行 ＋ 要確認 3 行
 python tests/test_cleaner.py
 ```
 サンプル、上の表のすべての表記、4096 バイト目で文字が分かれる UTF-8 ファイル、Shift-JIS ファイル、列名の変更、コマンドラインを確認します。
-GitHub Actions で Windows・macOS・Linux 上で毎回実行しています。
 
 ## ライセンス
 

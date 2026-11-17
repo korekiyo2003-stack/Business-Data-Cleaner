@@ -60,7 +60,7 @@ export_clean_workbook(result, "結果.xlsx")
 python tests/test_cleaner.py
 ```
 Covers the sample file, every format in the table above, a UTF-8 file whose 4096th byte splits a character,
-a CP932 file, custom column names in the Excel output, and the command line. Run on Windows, macOS and Linux by GitHub Actions.
+a CP932 file, custom column names in the Excel output, and the command line.
 
 ## License
 
