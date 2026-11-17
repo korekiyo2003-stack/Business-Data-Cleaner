@@ -5,6 +5,8 @@ Creates formatted multi-sheet workbooks with KPI summaries, freeze panes, and au
 
 from __future__ import annotations
 
+import json
+import unicodedata
 from pathlib import Path
 from typing import Any, Dict
 
@@ -13,8 +15,18 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 
+def _display_width(value: Any) -> int:
+    """Column width in Excel units: full-width (CJK) characters take two."""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in str(value or ""))
+
+
 def export_clean_workbook(clean_result: Any, output_path: str | Path) -> Path:
     out = Path(output_path)
+    fields = clean_result.audit_summary.get("fields", {})
+    key_f = fields.get("key", "注文ID")
+    date_f = fields.get("date", "日付")
+    group_f = fields.get("group", "店舗")
+    amount_f = fields.get("amount", "金額")
     wb = Workbook()
 
     header_fill = PatternFill("solid", fgColor="17324D")
@@ -40,7 +52,7 @@ def export_clean_workbook(clean_result: Any, output_path: str | Path) -> Path:
     total_sum = 0
     total_count = 0
     for group, amount in clean_result.totals_by_group.items():
-        count = sum(1 for r in clean_result.valid_records if r.get("店舗") == group)
+        count = sum(1 for r in clean_result.valid_records if r.get(group_f) == group)
         ws_summary.append([group, amount, count])
         total_sum += amount
         total_count += count
@@ -54,7 +66,7 @@ def export_clean_workbook(clean_result: Any, output_path: str | Path) -> Path:
 
     # Sheet 2: Valid Detail Records (整形済み明細)
     ws_detail = wb.create_sheet("整形済み明細")
-    detail_headers = ["注文ID", "日付", "店舗", "金額（円）", "元CSV行番号"]
+    detail_headers = [key_f, date_f, group_f, f"{amount_f}（円）", "元CSV行番号"]
     ws_detail.append(detail_headers)
     for cell in ws_detail[1]:
         cell.fill = header_fill
@@ -63,10 +75,10 @@ def export_clean_workbook(clean_result: Any, output_path: str | Path) -> Path:
 
     for rec in clean_result.valid_records:
         ws_detail.append([
-            rec.get("注文ID"),
-            rec.get("日付"),
-            rec.get("店舗"),
-            rec.get("金額"),
+            rec.get(key_f),
+            rec.get(date_f),
+            rec.get(group_f),
+            rec.get(amount_f),
             rec.get("line")
         ])
 
@@ -80,7 +92,6 @@ def export_clean_workbook(clean_result: Any, output_path: str | Path) -> Path:
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
     for item in clean_result.flagged_records:
-        import json
         ws_issues.append([
             item.get("line"),
             item.get("reason"),
@@ -92,12 +103,12 @@ def export_clean_workbook(clean_result: Any, output_path: str | Path) -> Path:
         ws.freeze_panes = "A2"
         ws.views.sheetView[0].showGridLines = True
         for col in ws.columns:
-            max_len = max(len(str(cell.value or "")) for cell in col)
+            max_len = max(_display_width(cell.value) for cell in col)
             col_letter = get_column_letter(col[0].column)
             ws.column_dimensions[col_letter].width = max(max_len + 4, 14)
             for cell in col:
                 cell.border = thin_border
-                if cell.row > 1 and isinstance(cell.value, int):
+                if cell.row > 1 and isinstance(cell.value, int) and not isinstance(cell.value, bool) and ws[1][cell.column - 1].value != "元CSV行番号":
                     cell.number_format = "#,##0"
 
     out.parent.mkdir(parents=True, exist_ok=True)

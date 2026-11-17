@@ -38,46 +38,66 @@ def normalize_text(text: str) -> str:
     return normalized
 
 
-def parse_japanese_date(raw_date: str) -> Optional[str]:
-    """Parse dates in ISO, slash, dot, or Wareki formats to standard YYYY-MM-DD."""
-    norm = normalize_text(raw_date).replace("/", "-").replace(".", "-")
-    # Match Reiwa date e.g. 令和6年11月1日
-    m = re.match(r"(?:令和|R)(\d+)年(\d+)月(\d+)日", norm)
-    if m:
-        year = 2018 + int(m.group(1))
-        month = int(m.group(2))
-        day = int(m.group(3))
-        try:
-            return date(year, month, day).isoformat()
-        except ValueError:
-            return None
+ERA_START = {"令和": 2018, "R": 2018, "平成": 1988, "H": 1988, "昭和": 1925, "S": 1925}
 
-    # Match YYYY-MM-DD or YYYY-M-D
-    m2 = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", norm)
-    if m2:
-        try:
-            return date(int(m2.group(1)), int(m2.group(2)), int(m2.group(3))).isoformat()
-        except ValueError:
-            return None
+
+def _make_date(y: int, m: int, d: int) -> Optional[str]:
+    try:
+        return date(y, m, d).isoformat()
+    except ValueError:
+        return None
+
+
+def parse_japanese_date(raw_date: str) -> Optional[str]:
+    """Parse ISO, slash, dot, 年月日, YYYYMMDD and Wareki (令和/平成/昭和, R/H/S, 元年) dates to YYYY-MM-DD."""
+    norm = normalize_text(raw_date).replace(" ", "")
+    if not norm:
+        return None
+
+    # Wareki: 令和6年11月1日, 令和元年5月1日, R6.11.1, H31/4/30
+    m = re.match(r"^(令和|平成|昭和|[RHSrhs])(元|\d{1,2})[年.\-/](\d{1,2})[月.\-/](\d{1,2})日?$", norm)
+    if m:
+        era = m.group(1).upper() if len(m.group(1)) == 1 else m.group(1)
+        year_in_era = 1 if m.group(2) == "元" else int(m.group(2))
+        return _make_date(ERA_START[era] + year_in_era, int(m.group(3)), int(m.group(4)))
+
+    # 2026年11月1日
+    m = re.match(r"^(\d{4})年(\d{1,2})月(\d{1,2})日$", norm)
+    if m:
+        return _make_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+    # 2026-11-01, 2026/11/1, 2026.11.1
+    m = re.match(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$", norm)
+    if m:
+        return _make_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+    # 20261101
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})$", norm)
+    if m:
+        return _make_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
 
     return None
 
 
 def parse_jpy_amount(raw_amount: str) -> Optional[int]:
-    """Parse currency strings e.g. '¥12,800', '12800円', '▲500' to integer."""
+    """Parse currency strings e.g. '¥12,800', '12800円', '▲500', '-¥500', '(1,200)', '12,800.0' to integer yen."""
     norm = normalize_text(raw_amount)
+    # U+2212 minus and other dashes survive NFKC; treat them as a minus sign
+    norm = re.sub(r"[−‒–—]", "-", norm)
+    norm = re.sub(r"[¥円,\s]", "", norm)
     if not norm:
         return None
-    # Check negative symbol or accounting triangle ▲ / △
     negative = False
-    if norm.startswith("-") or norm.startswith("▲") or norm.startswith("△"):
-        negative = True
-        norm = norm.lstrip("-▲△")
-    # Strip symbols
-    cleaned = re.sub(r"[¥円,\s]", "", norm)
-    if not cleaned.isdigit():
-        return None
-    val = int(cleaned)
+    if norm.startswith("(") and norm.endswith(")"):
+        negative, norm = True, norm[1:-1]
+    if norm[:1] in ("-", "▲", "△"):
+        negative, norm = not negative, norm[1:]
+    elif norm[:1] == "+":
+        norm = norm[1:]
+    m = re.fullmatch(r"(\d+)(?:\.0+)?", norm)
+    if not m:
+        return None  # includes fractional yen such as 12.5, which needs a human decision
+    val = int(m.group(1))
     return -val if negative else val
 
 
@@ -89,22 +109,18 @@ class DataCleaner:
         self.amount_field = amount_field
 
     def detect_encoding(self, file_path: Path) -> str:
-        raw_bytes = file_path.read_bytes()[:4096]
-        # Check UTF-8 BOM
+        # Decode the whole file: a 4 KB prefix can end in the middle of a
+        # multi-byte character and wrongly fail the UTF-8 check.
+        raw_bytes = file_path.read_bytes()
         if raw_bytes.startswith(b"\xef\xbb\xbf"):
             return "utf-8-sig"
-        # Try UTF-8
-        try:
-            raw_bytes.decode("utf-8")
-            return "utf-8"
-        except UnicodeDecodeError:
-            pass
-        # Try CP932 / Shift-JIS
-        try:
-            raw_bytes.decode("cp932")
-            return "cp932"
-        except UnicodeDecodeError:
-            return "utf-8-sig"
+        for enc in ("utf-8", "cp932"):
+            try:
+                raw_bytes.decode(enc)
+                return enc
+            except UnicodeDecodeError:
+                pass
+        raise ValueError(f"{file_path.name}: neither UTF-8 nor CP932 (Shift-JIS); re-save it in one of those")
 
     def clean_csv(self, csv_path: str | Path) -> CleanResult:
         path = Path(csv_path)
@@ -178,6 +194,8 @@ class DataCleaner:
             flagged_records=flagged_list,
             audit_summary={
                 "input_file": str(path.name),
+                "fields": {"key": self.key_field, "date": self.date_field,
+                           "group": self.group_field, "amount": self.amount_field},
                 "detected_encoding": encoding,
                 "processed_at": datetime.now().isoformat()
             }

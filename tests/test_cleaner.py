@@ -10,7 +10,9 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
-from cleaner import DataCleaner
+import tempfile
+
+from cleaner import DataCleaner, parse_japanese_date, parse_jpy_amount
 from excel_exporter import export_clean_workbook
 from openpyxl import load_workbook
 
@@ -61,5 +63,68 @@ def run_tests():
     print(">>> ALL DATA CLEANER TESTS PASSED SUCCESSFULLY! <<<")
 
 
+def run_edge_case_tests():
+    # Dates
+    cases = {
+        "令和元年5月1日": "2019-05-01", "R6.11.1": "2024-11-01", "r8-11-1": "2026-11-01", "H31/4/30": "2019-04-30",
+        "平成31年4月30日": "2019-04-30", "昭和64年1月7日": "1989-01-07",
+        "2026年11月1日": "2026-11-01", "２０２６／１１／０１": "2026-11-01", "20261101": "2026-11-01",
+        "2026/11/31": None, "11/01/2026": None, "": None,
+    }
+    for raw, want in cases.items():
+        assert parse_japanese_date(raw) == want, (raw, parse_japanese_date(raw), want)
+
+    # Amounts
+    amounts = {
+        "¥12,800": 12800, "12800円": 12800, "▲1,200": -1200, "△500": -500, "-¥500": -500,
+        "−300": -300, "(1,200)": -1200, "１２，８００": 12800, "12,800.0": 12800,
+        "+700": 700, "12.5": None, "abc": None, "": None, "¥": None,
+    }
+    for raw, want in amounts.items():
+        assert parse_jpy_amount(raw) == want, (raw, parse_jpy_amount(raw), want)
+
+    tmp = Path(tempfile.mkdtemp())
+    cleaner = DataCleaner()
+
+    # UTF-8 file where a 3-byte character straddles byte 4096 (the old 4 KB sniff rejected it as UTF-8)
+    header = "注文ID,日付,店舗,金額\n"
+    key_len = 4095 - len(header.encode("utf-8")) - len(",2026/11/01,")
+    text = header + "K" * key_len + ",2026/11/01,横浜,100\n" + "K2,2026/11/02,横浜,200\n"
+    raw = text.encode("utf-8")
+    try:
+        raw[:4096].decode("utf-8")
+        raise AssertionError("test setup: byte 4096 should split a character")
+    except UnicodeDecodeError:
+        pass
+    f_utf8 = tmp / "utf8.csv"
+    f_utf8.write_bytes(raw)
+    res = cleaner.clean_csv(f_utf8)
+    assert res.audit_summary["detected_encoding"] == "utf-8", res.audit_summary
+    assert res.totals_by_group == {"横浜": 300}, res.totals_by_group
+
+    # Shift-JIS (CP932) file
+    f_sjis = tmp / "sjis.csv"
+    f_sjis.write_bytes("注文ID,日付,店舗,金額\nC1,令和8年11月2日,東京,▲300\n".encode("cp932"))
+    res = cleaner.clean_csv(f_sjis)
+    assert res.audit_summary["detected_encoding"] == "cp932"
+    assert res.totals_by_group == {"東京": -300}
+
+    # Custom column names flow through to the Excel sheets
+    f_custom = tmp / "custom.csv"
+    f_custom.write_text("伝票番号,売上日,部門,売上\nD1,2026-11-03,営業部,5000\n", encoding="utf-8")
+    res = DataCleaner(key_field="伝票番号", date_field="売上日", group_field="部門", amount_field="売上").clean_csv(f_custom)
+    out = export_clean_workbook(res, tmp / "custom.xlsx")
+    wb = load_workbook(out, read_only=True)
+    detail = list(wb["整形済み明細"].iter_rows(values_only=True))
+    summary = list(wb["店舗別集計"].iter_rows(values_only=True))
+    wb.close()
+    assert detail[0][:3] == ("伝票番号", "売上日", "部門"), detail[0]
+    assert detail[1][:4] == ("D1", "2026-11-03", "営業部", 5000), detail[1]
+    assert summary[1] == ("営業部", 5000, 1), summary[1]
+
+    print(">>> EDGE CASE TESTS PASSED <<<")
+
+
 if __name__ == "__main__":
     run_tests()
+    run_edge_case_tests()
