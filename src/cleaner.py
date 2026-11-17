@@ -194,6 +194,7 @@ class DataCleaner:
             flagged_records=flagged_list,
             audit_summary={
                 "input_file": str(path.name),
+                "columns": list(header),
                 "fields": {"key": self.key_field, "date": self.date_field,
                            "group": self.group_field, "amount": self.amount_field},
                 "detected_encoding": encoding,

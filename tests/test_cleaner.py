@@ -19,7 +19,7 @@ from openpyxl import load_workbook
 
 def run_tests():
     sample_csv = Path(__file__).resolve().parent.parent / "samples" / "sales_dirty.csv"
-    output_excel = Path(__file__).resolve().parent.parent / "output" / "cleaned_sales.xlsx"
+    output_excel = Path(tempfile.mkdtemp()) / "cleaned_sales.xlsx"
 
     cleaner = DataCleaner()
     res = cleaner.clean_csv(sample_csv)
@@ -125,6 +125,25 @@ def run_edge_case_tests():
     print(">>> EDGE CASE TESTS PASSED <<<")
 
 
+def run_cli_tests():
+    import json
+    import subprocess
+    root = Path(__file__).resolve().parent.parent
+    tmp = Path(tempfile.mkdtemp())
+    run = lambda *a: subprocess.run([sys.executable, str(root / "clean.py"), *a], capture_output=True, text=True,
+                                    encoding="utf-8", env={**__import__("os").environ, "PYTHONIOENCODING": "utf-8"})
+    r = run(str(root / "samples" / "sales_dirty.csv"), "-o", str(tmp / "o.xlsx"), "--json")
+    assert r.returncode == 0, r.stderr
+    summary = json.loads(r.stdout)
+    assert (summary["valid"], summary["flagged"]) == (7, 3) and (tmp / "o.xlsx").exists()
+    r = run(str(root / "samples" / "sales_dirty.csv"), "--key", "伝票")
+    assert r.returncode == 2 and "伝票" in r.stderr
+    r = run(str(tmp / "missing.csv"))
+    assert r.returncode == 2
+    print(">>> CLI TESTS PASSED <<<")
+
+
 if __name__ == "__main__":
     run_tests()
     run_edge_case_tests()
+    run_cli_tests()
