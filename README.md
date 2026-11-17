@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/cover.png" alt="Business-Data-Cleaner" width="100%"></p>
+
 # Business-Data-Cleaner: Enterprise ETL & Audit Engine
 
 <div align="center">

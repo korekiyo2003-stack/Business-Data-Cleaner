@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/cover.png" alt="Business-Data-Cleaner" width="100%"></p>
+
 # Business-Data-Cleaner: 日本語業務データ整形・検証・Excel自動生成
 
 <div align="center">
